@@ -1,0 +1,8 @@
+.claude/
+__pycache__/
+.idea
+
+
+# models
+
+*.pt

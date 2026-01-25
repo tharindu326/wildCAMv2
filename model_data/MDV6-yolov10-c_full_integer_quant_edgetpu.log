@@ -1,0 +1,49 @@
+Edge TPU Compiler version 16.0.384591198
+Input: /content/MDV6-yolov10-c_saved_model/MDV6-yolov10-c_full_integer_quant.tflite
+Output: /content/MDV6-yolov10-c_saved_model/MDV6-yolov10-c_full_integer_quant_edgetpu.tflite
+
+Operator                       Count      Status
+
+TRANSPOSE                      6          More than one subgraph is not supported
+TRANSPOSE                      8          Operation is otherwise supported, but not mapped due to some unspecified limitation
+SUB                            1          More than one subgraph is not supported
+TILE                           2          Operation is working on an unsupported data type
+CONCATENATION                  2          Tensor has unsupported rank (up to 3 innermost dimensions mapped)
+CONCATENATION                  1          Operation is working on an unsupported data type
+CONCATENATION                  1          Operation is otherwise supported, but not mapped due to some unspecified limitation
+CONCATENATION                  19         More than one subgraph is not supported
+CONV_2D                        1          Mapped to Edge TPU
+CONV_2D                        197        More than one subgraph is not supported
+REDUCE_MAX                     1          More than one subgraph is not supported
+RESHAPE                        2          Tensor has unsupported rank (up to 3 innermost dimensions mapped)
+RESHAPE                        2          Operation is otherwise supported, but not mapped due to some unspecified limitation
+RESHAPE                        20         More than one subgraph is not supported
+RESHAPE                        2          Operation is working on an unsupported data type
+PACK                           2          More than one subgraph is not supported
+PAD                            1          Mapped to Edge TPU
+PAD                            6          More than one subgraph is not supported
+SOFTMAX                        2          More than one subgraph is not supported
+CAST                           6          Operation is working on an unsupported data type
+QUANTIZE                       2          More than one subgraph is not supported
+QUANTIZE                       2          Operation is otherwise supported, but not mapped due to some unspecified limitation
+DEPTHWISE_CONV_2D              12         More than one subgraph is not supported
+LOGISTIC                       1          Mapped to Edge TPU
+LOGISTIC                       69         More than one subgraph is not supported
+MAX_POOL_2D                    3          More than one subgraph is not supported
+STRIDED_SLICE                  23         More than one subgraph is not supported
+STRIDED_SLICE                  2          Operation is otherwise supported, but not mapped due to some unspecified limitation
+DEQUANTIZE                     4          Operation is working on an unsupported data type
+MUL                            1          Operation is working on an unsupported data type
+MUL                            72         Operation version not supported
+FLOOR_MOD                      3          Operation is working on an unsupported data type
+GATHER                         1          Operation not supported
+RESIZE_NEAREST_NEIGHBOR        2          More than one subgraph is not supported
+GATHER_ND                      2          Operation not supported
+TOPK_V2                        1          Operation is working on an unsupported data type
+TOPK_V2                        1          Operation not supported
+LESS                           1          Operation is working on an unsupported data type
+FULLY_CONNECTED                4          More than one subgraph is not supported
+SPLIT                          2          More than one subgraph is not supported
+SPLIT                          4          For example, a fully-connected or softmax layer with 2D output
+ADD                            12         Operation version not supported
+ADD                            3          Operation is working on an unsupported data type

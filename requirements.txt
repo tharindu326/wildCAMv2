@@ -1,0 +1,25 @@
+# Wildlife Camera Detection System - Requirements
+# For Raspberry Pi 5 with ArduCam support
+
+# Core dependencies
+opencv-python>=4.8.0
+numpy>=1.24.0
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Tracking dependencies
+scipy>=1.10.0
+lap>=0.4.0
+
+# Configuration
+easydict>=1.10
+python-dotenv>=1.0.0
+
+# AWS S3 uploads
+boto3>=1.28.0
+botocore>=1.31.0
+
+# Raspberry Pi specific (install separately if needed)
+# picamera2  # For native Pi camera support
+# libcamera  # Camera stack for Pi
