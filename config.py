@@ -39,13 +39,23 @@ __C.video.FOURCC = 'mp4v'  # Video codec
 __C.video.save = True  # Enable video recording
 __C.video.recording_duration = 60  # Max recording duration in seconds
 
-# Camera configuration
+# Camera configuration (ArduCam Quad Camera Kit — 4-in-1 composition mode)
+# The CamArray HAT combines 4 cameras into a single stream as a 2x2 grid.
+# We capture the combined frame and split it into 4 quadrants.
 __C.camera = edict()
-__C.camera.num_cameras = 4  # Number of ArduCams connected
-__C.camera.frame_width = 640  # Camera frame width
-__C.camera.frame_height = 480  # Camera frame height
-__C.camera.fps = 30  # Camera capture FPS
-__C.camera.warmup_seconds = 0.5  # Seconds to wait after camera start for AE/AWB to settle
+__C.camera.num_cameras = 4  # Number of cameras in the quad kit (1-4)
+__C.camera.frame_width = 640  # Per-camera target width (after quadrant split + resize)
+__C.camera.frame_height = 480  # Per-camera target height (after quadrant split + resize)
+__C.camera.fps = 30  # Target FPS
+__C.camera.warmup_seconds = 1.0  # Seconds to wait after camera start for AE/AWB to settle
+
+# Combined (4-in-1) output resolution requested from Picamera2.
+# Available sensor modes for ArduCam 64MP quad:
+#   1280x720  @120fps  → 640x360 per cam  (fast, lower quality)
+#   1920x1080 @60fps   → 960x540 per cam  (good balance)
+#   2312x1736 @30fps   → 1156x868 per cam (high quality, matches 30fps target)
+__C.camera.combined_width = 1920   # Combined frame width
+__C.camera.combined_height = 1080  # Combined frame height
 
 # Recording candidate settings
 __C.recording = edict()

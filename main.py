@@ -286,8 +286,12 @@ class WildlifeMonitoringSystem:
 
 
 def run_single_camera_test(camera_id: int = 0):
-    """Run a test with a single camera (for development/debugging)"""
-    logger.info(f"Running single camera test on camera {camera_id}")
+    """Run a test with a single camera quadrant (for development/debugging).
+
+    Even though only one quadrant is processed, the full quad camera is opened
+    because the CamArray HAT always outputs the combined 4-in-1 frame.
+    """
+    logger.info(f"Running single camera test on quadrant {camera_id}")
 
     # Initialize components
     detector = Inference()
@@ -303,16 +307,16 @@ def run_single_camera_test(camera_id: int = 0):
 
     recording_manager = RecordingManager(camera_id, s3_manager)
 
-    # Open camera via CameraManager (uses Picamera2 for Pi CSI cameras)
-    cam_manager = CameraManager(num_cameras=1)
+    # Open the quad camera (always device 0) and request the specific quadrant
+    cam_manager = CameraManager()
     try:
         cam_manager.initialize_cameras([camera_id])
         cam_manager.start_all()
     except RuntimeError as e:
-        logger.error(f"Failed to open camera {camera_id}: {e}")
+        logger.error(f"Failed to open quad camera: {e}")
         return
 
-    logger.info("Starting single camera test loop (press Ctrl+C to quit)...")
+    logger.info(f"Starting single quadrant {camera_id} test loop (press Ctrl+C to quit)...")
 
     frame_count = 0
     start_time = time.time()
@@ -425,10 +429,11 @@ def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Wildlife Camera Monitoring System")
     parser.add_argument('--cameras', type=int, nargs='+', default=None,
-                        help='Libcamera device indices to use (default: 0 1 2 3 for ArduCam Quad Kit). '
-                             'Check available cameras with: libcamera-hello --list-cameras')
+                        help='Quadrant IDs to use (0-3 for ArduCam Quad Kit 2x2 grid). '
+                             'Default: 0 1 2 3 (all 4 cameras). '
+                             'E.g. --cameras 0 2 for top-left and bottom-left only.')
     parser.add_argument('--single-camera', type=int, default=None,
-                        help='Run single camera test mode with specified camera ID')
+                        help='Run single camera quadrant test (0-3) with detection pipeline')
     parser.add_argument('--video', type=str, default=None,
                         help='Run on video file instead of camera')
     parser.add_argument('--no-s3', action='store_true',

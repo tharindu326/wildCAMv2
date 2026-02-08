@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 """
-Camera Manager for ArduCam Quad Camera Kit on Raspberry Pi 5
-Uses Picamera2 (libcamera) for CSI camera capture with threading support.
+Camera Manager for ArduCam Quad Camera Kit on Raspberry Pi 5.
 
-The ArduCam Quad Camera module connects 4 cameras via a single CSI ribbon cable.
-After ArduCam driver installation, all 4 cameras appear as libcamera devices 0-3.
+The ArduCam Quad Camera module presents all 4 cameras as a SINGLE libcamera
+device via the CamArray HAT. In the default 4-in-1 composition mode, the
+output is one combined frame with all 4 camera views in a 2x2 grid:
+
+    ┌──────┬──────┐
+    │ Cam0 │ Cam1 │
+    ├──────┼──────┤
+    │ Cam2 │ Cam3 │
+    └──────┴──────┘
+
+This module:
+  1. Opens a single Picamera2 instance (device 0 = the combined quad output)
+  2. Captures the combined 4-in-1 frame
+  3. Splits it into 4 quadrants
+  4. Resizes each quadrant to the target per-camera resolution
+  5. Serves each quadrant as a separate "camera" to the rest of the pipeline
 """
 
 import cv2
 import threading
 import time
 import logging
+import numpy as np
 from config import cfg
 
 try:
@@ -22,207 +36,226 @@ except ImportError:
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-class CameraStream:
-    """Thread-safe camera stream handler for a single Pi camera via Picamera2"""
-
-    def __init__(self, camera_num: int, width: int = None, height: int = None, fps: int = None):
-        """
-        Initialize camera stream.
-
-        Args:
-            camera_num: Libcamera device index (0-3 for ArduCam Quad Kit).
-            width: Frame width (default from config).
-            height: Frame height (default from config).
-            fps: Target FPS (default from config).
-        """
-        if not PICAMERA2_AVAILABLE:
-            raise RuntimeError(
-                "picamera2 is not installed. Install it with: sudo apt install -y python3-picamera2"
-            )
-
-        self.camera_num = camera_num
-        self.width = width or cfg.camera.frame_width
-        self.height = height or cfg.camera.frame_height
-        self.fps = fps or cfg.camera.fps
-
-        self.picam2 = None
-        self.frame = None
-        self.frame_id = 0
-        self.timestamp = 0
-        self.running = False
-        self.lock = threading.Lock()
-        self.thread = None
-
-        self.actual_width = self.width
-        self.actual_height = self.height
-        self.actual_fps = self.fps
-
-        self._initialize_camera()
-
-    def _initialize_camera(self):
-        """Initialize the Picamera2 instance and configure it."""
-        try:
-            self.picam2 = Picamera2(camera_num=self.camera_num)
-        except Exception as e:
-            raise RuntimeError(f"Failed to open camera {self.camera_num}: {e}")
-
-        # Configure for BGR output so frames are directly compatible with OpenCV
-        config = self.picam2.create_preview_configuration(
-            main={
-                "size": (self.width, self.height),
-                "format": "BGR888"
-            },
-            controls={
-                "FrameRate": self.fps
-            }
-        )
-        self.picam2.configure(config)
-
-        logger.info(
-            f"Camera {self.camera_num} initialized: {self.width}x{self.height} @ {self.fps}fps (Picamera2)"
-        )
-
-    def start(self):
-        """Start the camera capture thread."""
-        if self.running:
-            return self
-
-        # Start the camera hardware
-        self.picam2.start()
-
-        # Warmup: let the auto-exposure and auto-white-balance settle
-        warmup_time = getattr(cfg.camera, "warmup_seconds", 0.5)
-        logger.info(f"Camera {self.camera_num}: warming up for {warmup_time}s...")
-        time.sleep(warmup_time)
-
-        self.running = True
-        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self.thread.start()
-        return self
-
-    def _capture_loop(self):
-        """Continuous frame capture loop."""
-        while self.running:
-            try:
-                # capture_array returns a numpy array in BGR888 format (OpenCV-compatible)
-                frame = self.picam2.capture_array("main")
-                with self.lock:
-                    self.frame = frame
-                    self.frame_id += 1
-                    self.timestamp = time.time()
-            except Exception as e:
-                logger.warning(f"Camera {self.camera_num}: capture error: {e}")
-                time.sleep(0.01)
-
-    def read(self):
-        """
-        Read the latest frame.
-
-        Returns:
-            tuple: (success, frame, frame_id, timestamp)
-        """
-        with self.lock:
-            if self.frame is None:
-                return False, None, 0, 0
-            return True, self.frame.copy(), self.frame_id, self.timestamp
-
-    def stop(self):
-        """Stop the camera capture and release resources."""
-        self.running = False
-        if self.thread is not None:
-            self.thread.join(timeout=2.0)
-        if self.picam2 is not None:
-            try:
-                self.picam2.stop()
-                self.picam2.close()
-            except Exception:
-                pass
-        logger.info(f"Camera {self.camera_num} stopped")
-
-    def is_running(self):
-        """Check if camera is running."""
-        return self.running and self.picam2 is not None
+# Quadrant layout for the 2x2 grid (cam_id -> grid position)
+# The CamArray HAT stitches cameras in this order:
+#   [0] [1]
+#   [2] [3]
+QUADRANT_MAP = {
+    0: (0, 0),  # top-left
+    1: (0, 1),  # top-right
+    2: (1, 0),  # bottom-left
+    3: (1, 1),  # bottom-right
+}
 
 
 class CameraManager:
-    """Manager for multiple Picamera2 camera streams (ArduCam Quad Kit)"""
+    """
+    Manager for ArduCam Quad Camera Kit (4-in-1 composition mode).
+
+    Captures from a single Picamera2 device, splits the combined frame
+    into 4 camera quadrants, and serves them independently.
+    """
 
     def __init__(self, num_cameras: int = None):
         """
         Initialize camera manager.
 
         Args:
-            num_cameras: Number of cameras to manage (default from config).
+            num_cameras: Number of cameras in the quad kit (1-4, default from config).
         """
         self.num_cameras = num_cameras or cfg.camera.num_cameras
-        self.cameras = {}
+        self.picam2 = None
+        self.camera_ids = []
         self.running = False
+
+        # Latest frames per camera (quadrant)
+        self._frames = {}
+        self._frame_ids = {}
+        self._timestamps = {}
+        self._lock = threading.Lock()
+        self._thread = None
+
+        # Per-camera target resolution (what the pipeline receives)
+        self.target_width = cfg.camera.frame_width    # 640
+        self.target_height = cfg.camera.frame_height  # 480
+
+        # Combined (4-in-1) frame resolution sent to Picamera2
+        # For the ArduCam 64MP quad kit, available sensor modes include:
+        #   1280x720 @120fps  → 640x360 per cam
+        #   1920x1080 @60fps  → 960x540 per cam
+        #   2312x1736 @30fps  → 1156x868 per cam
+        # Default: 1920x1080 gives 960x540 per quadrant (good quality + 60fps headroom)
+        self.combined_width = getattr(cfg.camera, 'combined_width', 1920)
+        self.combined_height = getattr(cfg.camera, 'combined_height', 1080)
 
     def initialize_cameras(self, camera_ids: list = None):
         """
-        Initialize all cameras.
+        Initialize the ArduCam Quad Camera.
 
         Args:
-            camera_ids: List of libcamera device indices (e.g. [0, 1, 2, 3]).
-                        Defaults to [0, 1, ..., num_cameras-1].
+            camera_ids: List of logical camera IDs to use (subset of [0,1,2,3]).
+                        Each maps to a quadrant in the 2x2 grid.
+                        Default: [0, 1, 2, 3] for all 4 cameras.
         """
+        if not PICAMERA2_AVAILABLE:
+            raise RuntimeError(
+                "picamera2 is not installed. Install with:\n"
+                "  sudo apt install -y python3-picamera2"
+            )
+
         if camera_ids is None:
             camera_ids = list(range(self.num_cameras))
 
-        for cam_id in camera_ids:
-            # Ensure int index for Picamera2
-            cam_num = int(cam_id) if not isinstance(cam_id, int) else cam_id
-            try:
-                camera = CameraStream(cam_num)
-                self.cameras[cam_num] = camera
-                logger.info(f"Initialized camera {cam_num}")
-            except RuntimeError as e:
-                logger.error(f"Failed to initialize camera {cam_num}: {e}")
+        # Validate IDs against the 2x2 quadrant layout
+        for cid in camera_ids:
+            if cid not in QUADRANT_MAP:
+                raise ValueError(
+                    f"Camera ID {cid} invalid. ArduCam Quad Kit supports IDs 0-3 "
+                    f"(2x2 grid quadrants)."
+                )
 
-        if not self.cameras:
-            raise RuntimeError("No cameras could be initialized")
+        self.camera_ids = camera_ids
 
-        logger.info(f"Initialized {len(self.cameras)} cameras")
+        # Open the single combined device (always device 0)
+        try:
+            self.picam2 = Picamera2(camera_num=0)
+        except Exception as e:
+            raise RuntimeError(f"Failed to open ArduCam Quad Camera (device 0): {e}")
+
+        # Configure for BGR output at the combined resolution
+        config = self.picam2.create_preview_configuration(
+            main={
+                "size": (self.combined_width, self.combined_height),
+                "format": "BGR888"
+            },
+            controls={
+                "FrameRate": cfg.camera.fps
+            }
+        )
+        self.picam2.configure(config)
+
+        # Initialize per-camera frame storage
+        for cam_id in self.camera_ids:
+            self._frames[cam_id] = None
+            self._frame_ids[cam_id] = 0
+            self._timestamps[cam_id] = 0
+
+        logger.info(
+            f"ArduCam Quad Camera initialized: "
+            f"combined={self.combined_width}x{self.combined_height}, "
+            f"per-camera target={self.target_width}x{self.target_height}, "
+            f"cameras={self.camera_ids}"
+        )
 
     def start_all(self):
-        """Start all camera streams."""
+        """Start the camera and begin capturing/splitting frames."""
+        self.picam2.start()
+
+        # Warmup: let auto-exposure and auto-white-balance settle
+        warmup = getattr(cfg.camera, 'warmup_seconds', 1.0)
+        logger.info(f"Camera warming up for {warmup}s (AE/AWB settling)...")
+        time.sleep(warmup)
+
         self.running = True
-        for cam_id, camera in self.cameras.items():
-            camera.start()
-            logger.info(f"Started camera {cam_id}")
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+        logger.info("Quad camera capture started")
+
+    def _capture_loop(self):
+        """Continuously capture the combined frame, split into quadrants."""
+        while self.running:
+            try:
+                # Capture the full 4-in-1 combined frame
+                combined = self.picam2.capture_array("main")
+                h, w = combined.shape[:2]
+                mid_x = w // 2
+                mid_y = h // 2
+
+                # Split into quadrants
+                quadrants = {
+                    0: combined[0:mid_y, 0:mid_x],       # top-left
+                    1: combined[0:mid_y, mid_x:w],        # top-right
+                    2: combined[mid_y:h, 0:mid_x],        # bottom-left
+                    3: combined[mid_y:h, mid_x:w],         # bottom-right
+                }
+
+                now = time.time()
+
+                with self._lock:
+                    for cam_id in self.camera_ids:
+                        quad = quadrants[cam_id]
+
+                        # Resize to target per-camera resolution if needed
+                        qh, qw = quad.shape[:2]
+                        if qw != self.target_width or qh != self.target_height:
+                            quad = cv2.resize(
+                                quad,
+                                (self.target_width, self.target_height),
+                                interpolation=cv2.INTER_LINEAR
+                            )
+
+                        self._frames[cam_id] = quad
+                        self._frame_ids[cam_id] += 1
+                        self._timestamps[cam_id] = now
+
+            except Exception as e:
+                logger.warning(f"Capture error: {e}")
+                time.sleep(0.01)
 
     def stop_all(self):
-        """Stop all camera streams."""
+        """Stop the camera capture and release resources."""
         self.running = False
-        for cam_id, camera in self.cameras.items():
-            camera.stop()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        if self.picam2 is not None:
+            try:
+                self.picam2.stop()
+                self.picam2.close()
+            except Exception:
+                pass
         logger.info("All cameras stopped")
 
     def read_frame(self, camera_id: int):
         """
-        Read frame from a specific camera.
+        Read the latest frame from a specific camera quadrant.
 
         Args:
-            camera_id: Camera ID to read from.
+            camera_id: Camera ID (0-3).
 
         Returns:
             tuple: (success, frame, frame_id, timestamp)
         """
-        if camera_id not in self.cameras:
-            return False, None, 0, 0
-        return self.cameras[camera_id].read()
+        with self._lock:
+            frame = self._frames.get(camera_id)
+            if frame is None:
+                return False, None, 0, 0
+            return (
+                True,
+                frame.copy(),
+                self._frame_ids[camera_id],
+                self._timestamps[camera_id]
+            )
 
     def read_all_frames(self):
         """
-        Read frames from all cameras.
+        Read latest frames from all active camera quadrants.
 
         Returns:
             dict: {camera_id: (success, frame, frame_id, timestamp)}
         """
         frames = {}
-        for cam_id, camera in self.cameras.items():
-            frames[cam_id] = camera.read()
+        with self._lock:
+            for cam_id in self.camera_ids:
+                frame = self._frames.get(cam_id)
+                if frame is None:
+                    frames[cam_id] = (False, None, 0, 0)
+                else:
+                    frames[cam_id] = (
+                        True,
+                        frame.copy(),
+                        self._frame_ids[cam_id],
+                        self._timestamps[cam_id]
+                    )
         return frames
 
     def get_camera_info(self, camera_id: int):
@@ -230,26 +263,27 @@ class CameraManager:
         Get camera information.
 
         Args:
-            camera_id: Camera ID.
+            camera_id: Camera ID (0-3).
 
         Returns:
-            dict: Camera properties.
+            dict: Camera properties, or None if camera_id is invalid.
         """
-        if camera_id not in self.cameras:
+        if camera_id not in self.camera_ids:
             return None
 
-        camera = self.cameras[camera_id]
         return {
             'camera_id': camera_id,
-            'width': camera.actual_width,
-            'height': camera.actual_height,
-            'fps': camera.actual_fps,
-            'running': camera.is_running()
+            'width': self.target_width,
+            'height': self.target_height,
+            'fps': cfg.camera.fps,
+            'running': self.running
         }
 
     def get_active_camera_ids(self):
         """Get list of active camera IDs."""
-        return [cam_id for cam_id, cam in self.cameras.items() if cam.is_running()]
+        if self.running:
+            return list(self.camera_ids)
+        return []
 
     def __enter__(self):
         """Context manager entry."""
@@ -264,22 +298,29 @@ class CameraManager:
 
 
 def test_cameras():
-    """Test camera initialization and capture."""
-    logger.info("Testing camera manager...")
+    """Test: capture from the quad camera and display all 4 quadrants."""
+    logger.info("Testing ArduCam Quad Camera Manager...")
 
     try:
-        manager = CameraManager(num_cameras=1)
-        manager.initialize_cameras([0])
+        manager = CameraManager()
+        manager.initialize_cameras([0, 1, 2, 3])
         manager.start_all()
 
-        # Capture a few frames
-        for i in range(30):
+        logger.info("Capturing test frames for 5 seconds...")
+        start = time.time()
+        frame_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+
+        while time.time() - start < 5.0:
+            frames = manager.read_all_frames()
+            for cam_id, (success, frame, fid, ts) in frames.items():
+                if success:
+                    frame_counts[cam_id] = fid
             time.sleep(1 / 30)
-            success, frame, frame_id, timestamp = manager.read_frame(0)
-            if success:
-                logger.info(f"Frame {frame_id}: {frame.shape}")
-            else:
-                logger.warning("Failed to read frame")
+
+        elapsed = time.time() - start
+        for cam_id, count in frame_counts.items():
+            fps = count / elapsed if elapsed > 0 else 0
+            logger.info(f"Camera {cam_id}: {count} frames in {elapsed:.1f}s ({fps:.1f} fps)")
 
         manager.stop_all()
         logger.info("Camera test complete")
