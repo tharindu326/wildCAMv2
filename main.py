@@ -303,26 +303,24 @@ def run_single_camera_test(camera_id: int = 0):
 
     recording_manager = RecordingManager(camera_id, s3_manager)
 
-    # Open camera
-    cap = cv2.VideoCapture(camera_id)
-    if not cap.isOpened():
-        logger.error(f"Failed to open camera {camera_id}")
+    # Open camera via CameraManager (uses Picamera2 for Pi CSI cameras)
+    cam_manager = CameraManager(num_cameras=1)
+    try:
+        cam_manager.initialize_cameras([camera_id])
+        cam_manager.start_all()
+    except RuntimeError as e:
+        logger.error(f"Failed to open camera {camera_id}: {e}")
         return
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.camera.frame_width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.camera.frame_height)
-    cap.set(cv2.CAP_PROP_FPS, cfg.camera.fps)
-
-    logger.info("Starting single camera test loop (press 'q' to quit)...")
+    logger.info("Starting single camera test loop (press Ctrl+C to quit)...")
 
     frame_count = 0
     start_time = time.time()
 
     try:
         while True:
-            ret, frame = cap.read()
+            ret, frame, _, _ = cam_manager.read_frame(camera_id)
             if not ret:
-                logger.warning("Failed to read frame")
                 time.sleep(0.01)
                 continue
 
@@ -343,17 +341,17 @@ def run_single_camera_test(camera_id: int = 0):
             cv2.putText(annotated_frame, f"FPS: {fps:.1f} | Frame: {frame_count}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-            # Display
-            cv2.imshow(f"Camera {camera_id} Test", annotated_frame)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
+            # Display if show mode is on
+            if cfg.flags.image_show:
+                cv2.imshow(f"Camera {camera_id} Test", annotated_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
 
     except KeyboardInterrupt:
         logger.info("Test interrupted")
     finally:
-        cap.release()
+        cam_manager.stop_all()
         recording_manager.stop()
         cv2.destroyAllWindows()
 
@@ -427,7 +425,8 @@ def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Wildlife Camera Monitoring System")
     parser.add_argument('--cameras', type=int, nargs='+', default=None,
-                        help='Camera device IDs to use (default: 0,1,2,3)')
+                        help='Libcamera device indices to use (default: 0 1 2 3 for ArduCam Quad Kit). '
+                             'Check available cameras with: libcamera-hello --list-cameras')
     parser.add_argument('--single-camera', type=int, default=None,
                         help='Run single camera test mode with specified camera ID')
     parser.add_argument('--video', type=str, default=None,

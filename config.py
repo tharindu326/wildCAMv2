@@ -45,6 +45,7 @@ __C.camera.num_cameras = 4  # Number of ArduCams connected
 __C.camera.frame_width = 640  # Camera frame width
 __C.camera.frame_height = 480  # Camera frame height
 __C.camera.fps = 30  # Camera capture FPS
+__C.camera.warmup_seconds = 0.5  # Seconds to wait after camera start for AE/AWB to settle
 
 # Recording candidate settings
 __C.recording = edict()

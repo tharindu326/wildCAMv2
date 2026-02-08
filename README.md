@@ -71,8 +71,14 @@ EOF
 # Run with all 4 cameras (default)
 python main.py
 
-# Run with specific cameras
+# Run with specific cameras (by index)
 python main.py --cameras 0 1 2 3
+
+# Raspberry Pi with 4 CSI / Pi cameras: use even indices (0 2 4 6) or device paths.
+# Odd /dev/video nodes (1, 3, 5...) are often metadata, not capture devices.
+python main.py --cameras 0 2 4 6
+# Or explicitly:
+python main.py --cameras /dev/video0 /dev/video2 /dev/video4 /dev/video6
 
 # Single camera test mode with preview
 python main.py --single-camera 0 --show
@@ -409,6 +415,9 @@ All configuration is in `config.py`. Key parameters:
 | `camera.frame_width` | 640 | Camera frame width |
 | `camera.frame_height` | 480 | Camera frame height |
 | `camera.fps` | 30 | Camera capture FPS |
+| `camera.warmup_frames` | 5 | Frames read after open to stabilize driver (avoids Pi segfaults) |
+
+**Raspberry Pi + CSI cameras:** Use `--cameras 0 2 4 6` or `--cameras /dev/video0 /dev/video2 /dev/video4 /dev/video6`. Check capture devices with `v4l2-ctl --list-devices` or `libcamera-hello --list-cameras`.
 
 ### Detection Settings
 

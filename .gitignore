@@ -1,6 +1,8 @@
 .claude/
 __pycache__/
 .idea
+.env
+*.zip
 
 
 # models
